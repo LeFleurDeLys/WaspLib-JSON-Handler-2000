@@ -106,8 +106,16 @@ WriteLn RSTranslator.Chunk2Coordinate(Point(53, 50));
 ```
 *)
 function TRSTranslator.Chunk2Coordinate(p: TPoint; Plane: Integer = 0): TPoint;
+var
+  OffSetAmount: Boolean;
 begin
-  Result.X := ((12800 * Plane * 2) + (p.X * Self.MapChunkSide) + 4096);
+
+  case Plane of
+  0: OffSetAmount : 4096;
+  1..3: OffSetAmount : (4096*2);
+  end;
+  
+  Result.X := (12800 * Plane * 2) + (p.X * Self.MapChunkSide) + OffSetAmount ;
   Result.Y := (Self.RSMap.Scope.Y2 - p.Y) * Self.MapChunkSide;
 end;
 

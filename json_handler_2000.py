@@ -346,8 +346,29 @@ class CoordinateUpdaterApp:
         files_processed = 0
         files_modified = 0
         errors = 0
+        total_files = 0
 
-        self.status_label.config(text="Processing...", fg="blue")
+        # First pass: count total files for progress tracking
+        if os.path.isfile(target_path):
+            if target_path.endswith(".json"):
+                total_files = 1
+            elif target_path.endswith(".zip"):
+                with zipfile.ZipFile(target_path, 'r') as zip_ref:
+                    total_files = sum(1 for f in zip_ref.namelist() if f.endswith(".json"))
+        else:
+            for root_dir, _, files in os.walk(target_path):
+                for file in files:
+                    if file.endswith(".json"):
+                        total_files += 1
+                    elif file.endswith(".zip"):
+                        zip_path = os.path.join(root_dir, file)
+                        try:
+                            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                                total_files += sum(1 for f in zip_ref.namelist() if f.endswith(".json"))
+                        except:
+                            pass
+
+        self.status_label.config(text=f"Processing 0/{total_files} files...", fg="blue")
         self.root.update()
 
         if os.path.isfile(target_path):
@@ -361,6 +382,8 @@ class CoordinateUpdaterApp:
                     print(f"Failed to process {target_path}: {e}")
                     errors += 1
             elif target_path.endswith(".zip"):
+                self.status_label.config(text=f"Processing zip: {os.path.basename(target_path)}...", fg="blue")
+                self.root.update()
                 z_processed, z_modified, z_errors = self.process_zip(target_path, x_off, y_off)
                 files_processed += z_processed
                 files_modified += z_modified
@@ -370,12 +393,14 @@ class CoordinateUpdaterApp:
                 self.status_label.config(text="Ready", fg="gray")
                 return
         else:
-            # Process directory (recursive)
+            # Process directory (recursive) - process zips one at a time sequentially
             for root_dir, _, files in os.walk(target_path):
                 for file in files:
                     if file.endswith(".json"):
                         file_path = os.path.join(root_dir, file)
                         files_processed += 1
+                        self.status_label.config(text=f"Processing {files_processed}/{total_files}: {os.path.basename(file_path)}", fg="blue")
+                        self.root.update()
                         try:
                             if self.process_file(file_path, x_off, y_off):
                                 files_modified += 1
@@ -384,6 +409,8 @@ class CoordinateUpdaterApp:
                             errors += 1
                     elif file.endswith(".zip"):
                         zip_path = os.path.join(root_dir, file)
+                        self.status_label.config(text=f"Processing zip: {os.path.basename(zip_path)}...", fg="blue")
+                        self.root.update()
                         z_processed, z_modified, z_errors = self.process_zip(zip_path, x_off, y_off)
                         files_processed += z_processed
                         files_modified += z_modified
@@ -401,36 +428,72 @@ class CoordinateUpdaterApp:
         processed = 0
         modified = 0
         errors = 0
-        any_changed = False
+        modified_files = {}  # filename -> modified content
+        original_files = {}  # filename -> original content (bytes)
 
         try:
-            with tempfile.TemporaryDirectory() as temp_dir:
-                # Extract all
-                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                    zip_ref.extractall(temp_dir)
-
-                # Scan extracted files
-                for root, _, files in os.walk(temp_dir):
-                    for file in files:
-                        if file.endswith(".json"):
-                            file_path = os.path.join(root, file)
-                            processed += 1
+            # First pass: read all files and process JSONs
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                # Read all files into memory
+                for info in zip_ref.infolist():
+                    if not info.filename.endswith("/"):  # Skip directory entries
+                        with zip_ref.open(info.filename) as f:
+                            original_files[info.filename] = f.read()
+                
+                # Process JSON files
+                for filename in original_files.keys():
+                    if filename.endswith(".json"):
+                        processed += 1
+                        try:
+                            content = original_files[filename].decode('utf-8')
+                            
+                            # Parse and process
                             try:
-                                if self.process_file(file_path, x_off, y_off):
+                                data = json.loads(content)
+                                
+                                # Determine Floor from parent directory
+                                try:
+                                    parent_dir = os.path.basename(os.path.dirname(filename))
+                                    floor = int(parent_dir)
+                                except ValueError:
+                                    floor = 0
+                                
+                                if floor < 0:
+                                    floor = 0
+                                
+                                # Check if modification is needed
+                                if self.recursive_update(data, x_off, y_off, floor):
+                                    # Format modified content
+                                    if isinstance(data, list):
+                                        formatted = "[\n"
+                                        for i, item in enumerate(data):
+                                            line = json.dumps(item, separators=(',', ':'), ensure_ascii=False)
+                                            if i < len(data) - 1:
+                                                formatted += f"  {line},\n"
+                                            else:
+                                                formatted += f"  {line}\n"
+                                        formatted += "]"
+                                    else:
+                                        formatted = json.dumps(data, indent=4, ensure_ascii=False)
+                                    
+                                    modified_files[filename] = formatted.encode('utf-8')
                                     modified += 1
-                                    any_changed = True
-                            except Exception as e:
-                                print(f"Failed to process {file_path} inside zip: {e}")
-                                errors += 1
+                            except json.JSONDecodeError:
+                                pass
+                        except Exception as e:
+                            print(f"Failed to process {filename} inside zip: {e}")
+                            errors += 1
 
-                # If changes made, re-zip
-                if any_changed:
-                    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zip_ref:
-                        for root, _, files in os.walk(temp_dir):
-                            for file in files:
-                                file_path = os.path.join(root, file)
-                                arcname = os.path.relpath(file_path, temp_dir)
-                                zip_ref.write(file_path, arcname)
+            # Only re-zip if there were modifications
+            if modified_files:
+                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zip_ref:
+                    for filename, content in original_files.items():
+                        if filename in modified_files:
+                            # Use modified content
+                            zip_ref.writestr(filename, modified_files[filename])
+                        else:
+                            # Use original content
+                            zip_ref.writestr(filename, content)
                                 
         except Exception as e:
             print(f"Failed to process zip {zip_path}: {e}")
