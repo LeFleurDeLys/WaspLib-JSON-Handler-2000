@@ -1,0 +1,218 @@
+(*
+# RSTranslator
+This file is responsible for conversions or internal RuneScape values to values
+that can be used by Simba and back.
+*)
+
+{$DEFINE WL_RSTRANSLATOR_INCLUDED}
+
+type
+(*
+## TRSTranslator
+Record responsible for conversions or internal RuneScape values to values
+that can be used by Simba and back.
+*)
+  TRSTranslator = record
+    const TileSize: Integer = 4;
+    const TileArea: Integer = 16;
+    const MaxHeight: Integer = 6048;
+    const Planes: Integer = 3;
+
+    RSMap: record
+      const ChunkSide: Integer = 64;
+      const Dimensions: TPoint = [100,200];
+      const Scope: TBox = [0, 19, 99, 196];
+    end;
+
+    const MapChunkSide: Integer = 256;
+  end;
+
+(*
+## RSTranslator.MapWidth
+```pascal
+property TRSTranslator.MapWidth: UInteger;
+```
+Returns the full width in pixels of the OldSchool RuneScape map.
+
+Example:
+```pascal
+WriteLn RSTranslator.MapWidth;
+```
+*)
+property TRSTranslator.MapWidth: Integer;
+begin
+  Result := Self.RSMap.Scope.Width * Self.MapChunkSide;
+end;
+
+(*
+## RSTranslator.MapHeight
+```pascal
+property TRSTranslator.MapHeight: Integer;
+```
+Returns the full height in pixels of the OldSchool RuneScape map.
+
+Example:
+```pascal
+WriteLn RSTranslator.MapHeight;
+```
+*)
+property TRSTranslator.MapHeight: Integer;
+begin
+  Result := Self.RSMap.Scope.Height * Self.MapChunkSide;
+end;
+
+
+(*
+## RSTranslator.Global2Chunk
+```pascal
+function TRSTranslator.Global2Chunk(p: TPoint): TPoint;
+function TRSTranslator.Global2Chunk(b: TBox): TBox; overload;
+```
+Converts a "Global" coordinate to a chunk number.
+
+Example:
+```pascal
+WriteLn RSTranslator.Global2Chunk(Point(2000, 2000));
+```
+*)
+function TRSTranslator.Global2Chunk(p: TPoint): TPoint;
+begin
+  while p.X > Self.MapWidth do p.X -= Self.MapWidth;
+  Result.X := Self.RSMap.Scope.X1 + Floor(p.X / Self.MapChunkSide);
+  Result.Y := Self.RSMap.Scope.Y2 - Floor(p.Y / Self.MapChunkSide);
+end;
+
+function TRSTranslator.Global2Chunk(b: TBox): TBox; overload;
+var
+  s, f: TPoint;
+begin
+  s := Self.Global2Chunk([b.X1, b.Y1]);
+  f := Self.Global2Chunk([b.X2, b.Y2]);
+  Result := [s.X, s.Y, f.X, f.Y];
+end;
+
+
+(*
+## RSTranslator.Chunk2Coordinate
+```pascal
+function TRSTranslator.Chunk2Coordinate(p: TPoint): TPoint;
+function TRSTranslator.Chunk2Coordinate(b: TBox): TBox; overload;
+```
+Converts a "Chunk" number to the top left "Global" coordinate of that chunk.
+Takes into account the new coordinate offset; NewCoord.X := (((Map.Width = 12800) * Plane * 2) + OldCoord.X + (16ChunksOffset = 4096))
+Example:
+```pascal
+WriteLn RSTranslator.Chunk2Coordinate(Point(53, 50));
+```
+*)
+function TRSTranslator.Chunk2Coordinate(p: TPoint; Plane: Integer = 0): TPoint;
+begin
+  Result.X := ((12800 * Plane * 2) + (p.X * Self.MapChunkSide) + 4096);
+  Result.Y := (Self.RSMap.Scope.Y2 - p.Y) * Self.MapChunkSide;
+end;
+
+function TRSTranslator.Chunk2Coordinate(b: TBox): TBox; overload;
+var
+  s, f: TPoint;
+begin
+  s := Self.Chunk2Coordinate([b.X1, b.Y1]);
+  f := Self.Chunk2Coordinate([b.X2+1, b.Y2-1]);
+  Result := [s.X, s.Y, f.X-1, f.Y-1];
+end;
+
+
+(*
+## RSTranslator.DebugChunkCoordinates
+```pascal
+procedure TRSTranslator.DebugChunkCoordinates(Chunk: TPoint);
+```
+Prints the calculated map coordinates (x1, y1, x2, y2) for a chunk across Planes 0 to 4.
+
+Example:
+```pascal
+RSTranslator.DebugChunkCoordinates([50, 50]);
+```
+*)
+procedure TRSTranslator.DebugChunkCoordinates(Chunk: TPoint);
+var
+  i, x2, y2: Integer;
+  pt: TPoint;
+begin
+  for i := 0 to 4 do
+  begin
+    pt := Self.Chunk2Coordinate(Chunk, i);
+    x2 := pt.X + Self.MapChunkSide - 1;
+    y2 := pt.Y + Self.MapChunkSide - 1;
+    WriteLn('Plane ', i, ': x1=', pt.X, ', y1=', pt.Y, ', x2=', x2, ', y2=', y2);
+  end;
+end;
+
+
+function TRSTranslator.Height2Color(height: Single): Integer;
+const
+  H_VALUE := Self.MaxHeight / $FFFFFF;
+begin
+  Result := Round((height / H_VALUE) / 4 * 128);
+end;
+
+function TRSTranslator.Color2Height(color: Integer): Single;
+const
+  H_VALUE := Self.MaxHeight / $FFFFFF;
+begin
+  Result := color * H_VALUE * 4 / 128;
+end;
+
+
+function TRSTranslator.Normalize(p: TPoint): TPoint;
+begin
+  Result := [p.X - (p.X mod Self.TileSize), p.Y - (p.Y mod Self.TileSize) + (Self.TileSize div 2)];
+end;
+
+function TRSTranslator.NormalizeDoor(p: TPoint): TPoint;
+begin
+  Result := [p.X - (p.X mod Self.TileSize) + 1, p.Y - (p.Y mod Self.TileSize) + 1];
+end;
+
+
+//This normalizes to the nearest tile rather than the tile the current point is on. So if the coordinate gived would be on the fourth column, it returns the tile to the right of it rather that the tile the coordinate is on
+//This should be used whenever you expect that there can be deviations to any side of the coordinate you want and want to prevent that if you go one pixel to the left, you end up with the tile to the left of the one you want
+
+function TRSTranslator.NormalizeNearestTile(pt: TPoint): TPoint;
+begin
+  if (pt.X mod Self.TileSize) = 3 then
+    Result := [pt.X - (pt.X mod Self.TileSize) + 4, pt.Y - (pt.Y mod Self.TileSize) + (Self.TileSize div 2)]
+  else
+    Result := [pt.X - (pt.X mod Self.TileSize), pt.Y - (pt.Y mod Self.TileSize) + (Self.TileSize div 2)];
+end;
+
+
+(*
+## TRSTranslator.GetChunks
+```pascal
+function TRSTranslator.GetChunks(start, finish: TPoint): TPointArray; static;
+```
+Simple methods that will return all chunks in between a `start` and `finish` chunks.
+This will also fix their order if required, as osrs chunks are oddly numbered from bottom to top on the Y axis.
+
+Example:
+```pascal
+WriteLn RSTranslator.GetChunks([20,20], [22,22]);
+//This will return:
+//[[20, 20], [20, 21], [20, 22], [21, 20], [21, 21], [21, 22], [22, 20], [22, 21], [22, 22]];
+```
+*)
+function TRSTranslator.GetChunks(start, finish: TPoint): TPointArray; static;
+var
+  x, y: Integer;
+begin
+  for x := Min(start.X, finish.X) to Max(start.X, finish.X) do
+    for y := Min(start.Y, finish.Y) to Max(start.Y, finish.Y) do
+      Result += [x,y];
+end;
+
+var
+(*
+## RSTranslator variable
+Global {ref}`TRSTranslator` variable.
+*)
+  RSTranslator: TRSTranslator;
